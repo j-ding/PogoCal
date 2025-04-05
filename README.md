@@ -2,7 +2,7 @@
 
 A Python application that automatically scrapes upcoming Pokémon GO events from LeekDuck.com and adds them to your Google Calendar with just a few clicks.
 
-![App Screenshot]((https://snapshotsdingpc.s3.us-east-1.amazonaws.com/PogoCal.JPG))
+![App Screenshot](https://snapshotsdingpc.s3.us-east-1.amazonaws.com/PogoCal.JPG)
 
 ## Features
 
