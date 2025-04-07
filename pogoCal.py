@@ -404,16 +404,17 @@ def scrape_leekduck_events():
         return []
 
 def create_calendar_events_direct(selected_events):
-    """Create Google Calendar events from direct event objects"""
+    """Create Google Calendar events from direct event objects with replacement warnings"""
     if not selected_events:
         print("No events to add to calendar")
         return []
         
     created_events = []
+    updated_events = []
     try:
         service, calendar_id = get_calendar_service()
         
-        # Get existing events to avoid duplicates
+        # Get existing events to check for duplicates and potential replacements
         existing_events = get_existing_events(service, calendar_id)
         
         for event in selected_events:
@@ -422,8 +423,10 @@ def create_calendar_events_direct(selected_events):
                 print(f"Skipping event with unparseable dates: {event.get('title')}")
                 continue
             
-            # Check if event already exists - using both title and start time
+            # Check if event already exists or if we're replacing a generic event
             event_exists = False
+            replace_generic = False
+            existing_event_info = None
             event_start_iso = event.get('start_time').isoformat()
             
             for existing in existing_events:
@@ -434,14 +437,52 @@ def create_calendar_events_direct(selected_events):
                     # For all-day events
                     existing_start = existing.get('start', {}).get('date') + "T00:00:00"
                 
+                # Exact duplicate - same title and time
                 if (existing.get('summary') == event.get('title') and 
                     existing_start and event_start_iso.startswith(existing_start[:16])):
                     event_exists = True
+                    break
+                
+                # Potential generic replacement - same time frame but different title 
+                # We're assuming if there's an event on the same day/time with a generic name pattern, 
+                # it might be a placeholder that should be replaced
+                if (existing_start and event_start_iso.startswith(existing_start[:10]) and
+                    is_same_event_type(existing.get('summary', ''), event.get('title', ''))):
+                    replace_generic = True
+                    existing_event_info = {
+                        'id': existing.get('id'),
+                        'title': existing.get('summary'),
+                        'start': existing_start
+                    }
                     break
             
             if event_exists:
                 print(f"Event already exists: {event.get('title')}")
                 continue
+            
+            # If we're replacing a generic event, ask for confirmation
+            if replace_generic and existing_event_info:
+                if messagebox.askyesno(
+                    "Replace Event?", 
+                    f"An existing event with title '{existing_event_info['title']}' " +
+                    f"was found on the same date as '{event.get('title')}'.\n\n" +
+                    f"This appears to be a placeholder that now has more specific details.\n\n" +
+                    f"Would you like to replace it with the updated information?"
+                ):
+                    # Delete the old event first
+                    try:
+                        service.events().delete(
+                            calendarId=calendar_id, 
+                            eventId=existing_event_info['id']
+                        ).execute()
+                        print(f"Deleted placeholder event: {existing_event_info['title']}")
+                        updated_events.append((existing_event_info['title'], event.get('title')))
+                    except Exception as e:
+                        print(f"Failed to delete old event: {str(e)}")
+                        continue
+                else:
+                    # User chose not to replace
+                    continue
             
             # Create event
             event_link = event.get('event_link', 'https://leekduck.com/events/')
@@ -517,10 +558,49 @@ def create_calendar_events_direct(selected_events):
             except Exception as e:
                 print(f"Failed to create event {event.get('title')}: {str(e)}")
         
+        # Update the messagebox to include information about updated events
+        if created_events and updated_events:
+            message = f"Successfully added {len(created_events)} events to the calendar:\n\n" + \
+                     "\n".join([f"• {event}" for event in created_events]) + \
+                     "\n\nThe following events were updated with more specific information:\n\n" + \
+                     "\n".join([f"• '{old}' → '{new}'" for old, new in updated_events])
+            messagebox.showinfo("Events Added", message)
+        elif created_events:
+            messagebox.showinfo(
+                "Events Added", 
+                f"Successfully added {len(created_events)} events to the calendar:\n\n" + 
+                "\n".join([f"• {event}" for event in created_events])
+            )
+        else:
+            messagebox.showinfo("No Events Added", "No new events were added to the calendar.")
+        
         return created_events
     except Exception as e:
         print(f"Error creating calendar events: {str(e)}")
         return []
+
+def is_same_event_type(title1, title2):
+    """Determine if two event titles are likely the same event type with different specificity"""
+    # Helper function to detect similar event types
+    title1 = title1.lower()
+    title2 = title2.lower()
+    
+    # Check for common event types
+    event_patterns = [
+        "community day",
+        "spotlight hour",
+        "raid day",
+        "hatch day",
+        "battle day",
+        "max battle",
+        "go fest"
+    ]
+    
+    for pattern in event_patterns:
+        if pattern in title1 and pattern in title2 and title1 != title2:
+            return True
+            
+    return False
 
 def get_existing_events(service, calendar_id):
     """Get existing events from calendar to avoid duplicates"""
