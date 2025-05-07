@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 import datetime
 import os
 import json
+import argparse
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -16,62 +17,147 @@ from PIL import Image, ImageTk
 from io import BytesIO
 import threading
 import concurrent.futures
+import sys
+
+# Script constants
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
+TOKEN_PATH = os.path.join(SCRIPT_DIR, "token.pickle")
+DEFAULT_CREDENTIALS_PATH = os.path.join(SCRIPT_DIR, "credentials.json")
 
 # Google Calendar API setup
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 
-# Define paths relative to script location
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CREDENTIALS_PATH = os.path.join(SCRIPT_DIR, "credentials.json")
-TOKEN_PATH = os.path.join(SCRIPT_DIR, "token.pickle")
+def create_default_config():
+    """Create a default configuration file if it doesn't exist"""
+    default_config = {
+        "google_api": {
+            "credentials_path": "credentials.json",
+            "calendar_id": "your_calendar_id_here@group.calendar.google.com"
+        },
+        "leekduck": {
+            "url": "https://leekduck.com/events/",
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        },
+        "app": {
+            "window_size": "1000x700",
+            "default_reminders": [
+                {"method": "popup", "minutes": 60},
+                {"method": "popup", "minutes": 10}
+            ],
+            "timezone": "America/New_York"
+        },
+        "event_colors": {
+            "Raid": "#E57373",
+            "Community Day": "#81C784",
+            "Spotlight": "#64B5F6",
+            "Battle": "#FFB74D",
+            "Hatch Day": "#9575CD",
+            "Mega": "#FF8A65",
+            "General": "#B0BEC5",
+            "Ticket": "#4DB6AC",
+            "Shadow": "#9E9E9E"
+        }
+    }
+    
+    try:
+        with open(CONFIG_PATH, 'w') as f:
+            json.dump(default_config, f, indent=4)
+        print(f"Created default configuration file at {CONFIG_PATH}")
+        print("Please edit this file with your Google API credentials before running the script again.")
+        return default_config
+    except Exception as e:
+        print(f"Error creating default configuration: {str(e)}")
+        sys.exit(1)
+
+def load_config():
+    """Load configuration from config.json"""
+    # Check if config file exists
+    if not os.path.exists(CONFIG_PATH):
+        print("Configuration file not found. Creating default configuration...")
+        return create_default_config()
+    
+    try:
+        with open(CONFIG_PATH, 'r') as f:
+            config = json.load(f)
+        
+        # Validate essential configuration
+        if not config.get("google_api", {}).get("calendar_id"):
+            print("ERROR: Missing calendar_id in configuration file.")
+            print("Please edit config.json and add your Google Calendar ID.")
+            sys.exit(1)
+            
+        return config
+    except Exception as e:
+        print(f"Error loading configuration: {str(e)}")
+        sys.exit(1)
 
 def get_calendar_service():
-    """Set up and return Google Calendar service with calendar ID from credentials"""
+    """Set up and return Google Calendar service with improved error handling"""
+    config = load_config()
     creds = None
-    calendar_id = None
     
-    # The file token.pickle stores the user's access and refresh tokens
-    if os.path.exists(TOKEN_PATH):
-        with open(TOKEN_PATH, 'rb') as token:
-            creds = pickle.load(token)
+    # Get calendar ID from config
+    calendar_id = config["google_api"]["calendar_id"]
     
-    # If credentials don't exist or are invalid, get new ones
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            if not os.path.exists(CREDENTIALS_PATH):
-                print(f"ERROR: Could not find credentials file at {CREDENTIALS_PATH}")
-                print(f"Current working directory is: {os.getcwd()}")
-                raise FileNotFoundError(f"credentials.json not found at {CREDENTIALS_PATH}")
-            
-            # Load the credentials.json file to get the calendar_id
-            with open(CREDENTIALS_PATH, 'r') as f:
-                creds_data = json.load(f)
-                if 'calendar_id' in creds_data:
-                    calendar_id = creds_data['calendar_id']
-                else:
-                    raise ValueError("calendar_id not found in credentials.json")
-                
-            flow = InstalledAppFlow.from_client_secrets_file(
-                CREDENTIALS_PATH, SCOPES)
-            creds = flow.run_local_server(port=0)
+    # Get credentials path from config (either absolute or relative to script dir)
+    credentials_path = config["google_api"]["credentials_path"]
+    if not os.path.isabs(credentials_path):
+        credentials_path = os.path.join(SCRIPT_DIR, credentials_path)
+    
+    try:
+        # The file token.pickle stores the user's access and refresh tokens
+        if os.path.exists(TOKEN_PATH):
+            with open(TOKEN_PATH, 'rb') as token:
+                try:
+                    creds = pickle.load(token)
+                    print("Loaded credentials from token.pickle")
+                except Exception as e:
+                    print(f"Error loading token.pickle: {str(e)}")
+                    print("Will create new authentication token")
+                    creds = None
         
-        # Save credentials for next run
-        with open(TOKEN_PATH, 'wb') as token:
-            pickle.dump(creds, token)
-    
-    # If we don't have calendar_id yet, load it from credentials.json
-    if not calendar_id:
-        with open(CREDENTIALS_PATH, 'r') as f:
-            creds_data = json.load(f)
-            if 'calendar_id' in creds_data:
-                calendar_id = creds_data['calendar_id']
-            else:
-                raise ValueError("calendar_id not found in credentials.json")
-    
-    service = build('calendar', 'v3', credentials=creds)
-    return service, calendar_id
+        # If credentials don't exist or are invalid, get new ones
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                print("Refreshing expired token...")
+                try:
+                    creds.refresh(Request())
+                    print("Token refreshed successfully")
+                except Exception as e:
+                    print(f"Failed to refresh token: {str(e)}")
+                    print("Will try to get new credentials instead")
+                    if os.path.exists(TOKEN_PATH):
+                        os.remove(TOKEN_PATH)
+                    creds = None
+            
+            if not creds:
+                # Check if credentials file exists
+                if not os.path.exists(credentials_path):
+                    print(f"ERROR: Could not find credentials file at {credentials_path}")
+                    print("Make sure you've set up a Google API project and downloaded the credentials.json file.")
+                    print("For instructions, see: https://developers.google.com/calendar/api/quickstart/python")
+                    sys.exit(1)
+                
+                print("Starting new authentication flow...")
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    credentials_path, SCOPES)
+                creds = flow.run_local_server(port=0)
+                print("Authentication successful!")
+            
+            # Save credentials for next run
+            with open(TOKEN_PATH, 'wb') as token:
+                pickle.dump(creds, token)
+                print("Saved new token to token.pickle")
+        
+        service = build('calendar', 'v3', credentials=creds)
+        return service, calendar_id
+        
+    except Exception as e:
+        print(f"Error in get_calendar_service: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise
 
 def get_detailed_event_info(event_url, headers, event_data):
     """Extract detailed start and end times from event's detail page"""
@@ -198,9 +284,12 @@ def get_detailed_event_info(event_url, headers, event_data):
 
 def scrape_leekduck_events():
     """Scrape events from LeekDuck website with improved time parsing"""
-    url = "https://leekduck.com/events/"
+    config = load_config()
+    leekduck_config = config.get("leekduck", {})
+    
+    url = leekduck_config.get("url", "https://leekduck.com/events/")
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        'User-Agent': leekduck_config.get("user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
     }
     
     try:
@@ -403,85 +492,217 @@ def scrape_leekduck_events():
         traceback.print_exc()
         return []
 
+def is_same_event_type(title1, title2):
+    """Determine if two event titles are likely the same event type with different specificity"""
+    # Helper function to detect similar event types
+    title1 = title1.lower()
+    title2 = title2.lower()
+    
+    # Check for common event types
+    event_patterns = [
+        "community day",
+        "spotlight hour",
+        "raid day",
+        "hatch day",
+        "battle day",
+        "max battle",
+        "go fest"
+    ]
+    
+    for pattern in event_patterns:
+        if pattern in title1 and pattern in title2 and title1 != title2:
+            return True
+            
+    return False
+
+def is_similar_title(title1, title2):
+    """Check if titles are similar enough to be considered the same event"""
+    # Remove common words that might change between updates
+    title1 = title1.lower()
+    title2 = title2.lower()
+    
+    # Common words that might be added/removed in updates
+    common_words = ["featured", "event", "special", "bonus", "update", "the", "a", "an", "in", "on"]
+    
+    # Clean the titles by removing common words
+    clean_title1 = ' '.join([word for word in title1.split() if word.lower() not in common_words])
+    clean_title2 = ' '.join([word for word in title2.split() if word.lower() not in common_words])
+    
+    # Check for significant word overlap
+    words1 = set(clean_title1.split())
+    words2 = set(clean_title2.split())
+    common_words = words1.intersection(words2)
+    
+    # If they share at least 2 significant words and 50% of the smaller title
+    min_words = min(len(words1), len(words2))
+    if len(common_words) >= 2 and len(common_words) >= min_words * 0.5:
+        return True
+    
+    # Check for Pokémon name matches
+    pokemon_name1 = extract_pokemon_name(title1)
+    pokemon_name2 = extract_pokemon_name(title2)
+    
+    if pokemon_name1 and pokemon_name2 and pokemon_name1 == pokemon_name2:
+        return True
+    
+    return False
+
+def extract_pokemon_name(title):
+    """Extract Pokémon name from event title if present"""
+    # Load Pokemon list from config if available
+    config = load_config()
+    pokemon_list = config.get("pokemon_list", [
+        "pikachu", "eevee", "charmander", "bulbasaur", "squirtle", 
+        "machop", "abra", "gastly", "magikarp", "dratini", "chikorita",
+        "cyndaquil", "totodile", "mareep", "larvitar", "treecko", 
+        "torchic", "mudkip", "ralts", "slakoth", "bagon", "beldum",
+        "turtwig", "chimchar", "piplup", "gible", "snivy", "tepig", 
+        "oshawott", "axew", "chespin", "fennekin", "froakie", "fletchling",
+        "rowlet", "litten", "popplio", "grookey", "scorbunny", "sobble",
+        "pikipek", "rookidee", "pawmi", "sandygast", "poochyena", "golett",
+        "tapu fini", "tapu bulu", "suicune", "houndoom", "gyarados",
+        "altaria", "regirock", "regigigas", "uxie", "mesprit", "azelf", 
+        "gastly", "sableye", "machamp"
+    ])
+    
+    title_lower = title.lower()
+    for pokemon in pokemon_list:
+        if pokemon in title_lower:
+            return pokemon
+    
+    return None
+
+def get_existing_events(service, calendar_id):
+    """Get existing events from calendar to avoid duplicates"""
+    # Get events for the next 90 days
+    now = datetime.datetime.utcnow()
+    end_date = now + datetime.timedelta(days=90)
+    
+    now_str = now.isoformat() + 'Z'  # 'Z' indicates UTC time
+    end_str = end_date.isoformat() + 'Z'
+    
+    try:
+        events_result = service.events().list(
+            calendarId=calendar_id, 
+            timeMin=now_str,
+            timeMax=end_str,
+            maxResults=2500, 
+            singleEvents=True,
+            orderBy='startTime').execute()
+        return events_result.get('items', [])
+    except Exception as e:
+        print(f"Error getting existing events: {str(e)}")
+        return []
+
 def create_calendar_events_direct(selected_events):
-    """Create Google Calendar events from direct event objects with replacement warnings"""
+    """Create Google Calendar events with improved update handling"""
     if not selected_events:
         print("No events to add to calendar")
         return []
         
     created_events = []
     updated_events = []
+    skipped_events = []
+    
     try:
         service, calendar_id = get_calendar_service()
+        config = load_config()
+        app_config = config.get("app", {})
         
-        # Get existing events to check for duplicates and potential replacements
+        # Get timezone from config
+        timezone = app_config.get("timezone", "America/New_York")
+        
+        # Get reminder settings from config
+        reminders = app_config.get("default_reminders", [
+            {"method": "popup", "minutes": 60},
+            {"method": "popup", "minutes": 10}
+        ])
+        
+        # Get existing events to check for duplicates and potential updates
         existing_events = get_existing_events(service, calendar_id)
+        print(f"Found {len(existing_events)} existing events in calendar")
         
         for event in selected_events:
             # Skip events with unparseable dates
             if not event.get('start_time') or not event.get('end_time'):
                 print(f"Skipping event with unparseable dates: {event.get('title')}")
+                skipped_events.append(f"{event.get('title')} (invalid dates)")
                 continue
             
-            # Check if event already exists or if we're replacing a generic event
+            # Check if event already exists or needs updating
             event_exists = False
-            replace_generic = False
-            existing_event_info = None
+            update_existing = False
+            existing_event_id = None
+            existing_event_title = None
             event_start_iso = event.get('start_time').isoformat()
+            event_start_date = event.get('start_time').date()
             
+            # First look for exact matches or similar events
             for existing in existing_events:
+                # Get existing event start time
                 existing_start = None
+                existing_date = None
+                
                 if existing.get('start', {}).get('dateTime'):
                     existing_start = existing.get('start', {}).get('dateTime')
+                    # Extract date from ISO format
+                    existing_date = datetime.datetime.fromisoformat(
+                        existing_start.replace('Z', '+00:00') if existing_start.endswith('Z') 
+                        else existing_start
+                    ).date()
                 elif existing.get('start', {}).get('date'):
                     # For all-day events
-                    existing_start = existing.get('start', {}).get('date') + "T00:00:00"
+                    existing_date = datetime.datetime.strptime(
+                        existing.get('start', {}).get('date'), '%Y-%m-%d'
+                    ).date()
                 
-                # Exact duplicate - same title and time
+                if not existing_date:
+                    continue
+                
+                # Case 1: Exact duplicate - same title and time
                 if (existing.get('summary') == event.get('title') and 
-                    existing_start and event_start_iso.startswith(existing_start[:16])):
+                    existing_date == event_start_date):
                     event_exists = True
                     break
                 
-                # Potential generic replacement - same time frame but different title 
-                # We're assuming if there's an event on the same day/time with a generic name pattern, 
-                # it might be a placeholder that should be replaced
-                if (existing_start and event_start_iso.startswith(existing_start[:10]) and
-                    is_same_event_type(existing.get('summary', ''), event.get('title', ''))):
-                    replace_generic = True
-                    existing_event_info = {
-                        'id': existing.get('id'),
-                        'title': existing.get('summary'),
-                        'start': existing_start
-                    }
-                    break
+                # Case 2: Same event on same date but with updated details
+                if existing_date == event_start_date:
+                    # Check if it's the same type of event or a similar title
+                    if (is_same_event_type(existing.get('summary', ''), event.get('title', '')) or 
+                        is_similar_title(existing.get('summary', ''), event.get('title', ''))):
+                        update_existing = True
+                        existing_event_id = existing.get('id')
+                        existing_event_title = existing.get('summary')
+                        break
             
             if event_exists:
                 print(f"Event already exists: {event.get('title')}")
+                skipped_events.append(f"{event.get('title')} (already exists)")
                 continue
             
-            # If we're replacing a generic event, ask for confirmation
-            if replace_generic and existing_event_info:
+            # If we're updating an existing event, ask for confirmation
+            if update_existing and existing_event_id:
                 if messagebox.askyesno(
-                    "Replace Event?", 
-                    f"An existing event with title '{existing_event_info['title']}' " +
+                    "Update Event?", 
+                    f"An existing event '{existing_event_title}' " +
                     f"was found on the same date as '{event.get('title')}'.\n\n" +
-                    f"This appears to be a placeholder that now has more specific details.\n\n" +
-                    f"Would you like to replace it with the updated information?"
+                    f"Would you like to update it with the new information?"
                 ):
                     # Delete the old event first
                     try:
                         service.events().delete(
                             calendarId=calendar_id, 
-                            eventId=existing_event_info['id']
+                            eventId=existing_event_id
                         ).execute()
-                        print(f"Deleted placeholder event: {existing_event_info['title']}")
-                        updated_events.append((existing_event_info['title'], event.get('title')))
+                        print(f"Deleted old event: {existing_event_title}")
+                        updated_events.append((existing_event_title, event.get('title')))
                     except Exception as e:
                         print(f"Failed to delete old event: {str(e)}")
+                        skipped_events.append(f"{event.get('title')} (update failed)")
                         continue
                 else:
-                    # User chose not to replace
+                    # User chose not to update
+                    skipped_events.append(f"{event.get('title')} (update declined)")
                     continue
             
             # Create event
@@ -521,10 +742,7 @@ def create_calendar_events_direct(selected_events):
                               (f"\nBonus: {event.get('bonus')}" if event.get('event_type') == "Spotlight" and event.get('bonus') else ""),
                 'reminders': {
                     'useDefault': False,
-                    'overrides': [
-                        {'method': 'popup', 'minutes': 60},
-                        {'method': 'popup', 'minutes': 10},
-                    ],
+                    'overrides': reminders,
                 },
             }
             
@@ -543,11 +761,11 @@ def create_calendar_events_direct(selected_events):
                 # Use dateTime format for timed events
                 calendar_event['start'] = {
                     'dateTime': event.get('start_time').isoformat(),
-                    'timeZone': 'America/New_York',
+                    'timeZone': timezone,
                 }
                 calendar_event['end'] = {
                     'dateTime': event.get('end_time').isoformat(),
-                    'timeZone': 'America/New_York',
+                    'timeZone': timezone,
                 }
             
             # Insert event
@@ -557,62 +775,32 @@ def create_calendar_events_direct(selected_events):
                 created_events.append(event.get('title'))
             except Exception as e:
                 print(f"Failed to create event {event.get('title')}: {str(e)}")
+                skipped_events.append(f"{event.get('title')} (creation failed)")
         
-        # Update the messagebox to include information about updated events
-        if created_events and updated_events:
-            message = f"Successfully added {len(created_events)} events to the calendar:\n\n" + \
-                     "\n".join([f"• {event}" for event in created_events]) + \
-                     "\n\nThe following events were updated with more specific information:\n\n" + \
-                     "\n".join([f"• '{old}' → '{new}'" for old, new in updated_events])
-            messagebox.showinfo("Events Added", message)
-        elif created_events:
-            messagebox.showinfo(
-                "Events Added", 
-                f"Successfully added {len(created_events)} events to the calendar:\n\n" + 
-                "\n".join([f"• {event}" for event in created_events])
-            )
-        else:
+        # Prepare final message
+        message_parts = []
+        
+        if created_events:
+            message_parts.append(f"✅ Successfully added {len(created_events)} events to the calendar:\n\n" + 
+                                "\n".join([f"• {event}" for event in created_events]))
+        
+        if updated_events:
+            message_parts.append(f"🔄 Updated {len(updated_events)} events with new information:\n\n" + 
+                                "\n".join([f"• '{old}' → '{new}'" for old, new in updated_events]))
+        
+        if skipped_events:
+            message_parts.append(f"⚠️ Skipped {len(skipped_events)} events:\n\n" + 
+                                "\n".join([f"• {event}" for event in skipped_events]))
+        
+        if not message_parts:
             messagebox.showinfo("No Events Added", "No new events were added to the calendar.")
+        else:
+            messagebox.showinfo("Calendar Update Results", "\n\n".join(message_parts))
         
         return created_events
     except Exception as e:
         print(f"Error creating calendar events: {str(e)}")
-        return []
-
-def is_same_event_type(title1, title2):
-    """Determine if two event titles are likely the same event type with different specificity"""
-    # Helper function to detect similar event types
-    title1 = title1.lower()
-    title2 = title2.lower()
-    
-    # Check for common event types
-    event_patterns = [
-        "community day",
-        "spotlight hour",
-        "raid day",
-        "hatch day",
-        "battle day",
-        "max battle",
-        "go fest"
-    ]
-    
-    for pattern in event_patterns:
-        if pattern in title1 and pattern in title2 and title1 != title2:
-            return True
-            
-    return False
-
-def get_existing_events(service, calendar_id):
-    """Get existing events from calendar to avoid duplicates"""
-    now = datetime.datetime.utcnow().isoformat() + 'Z'  # 'Z' indicates UTC time
-    try:
-        events_result = service.events().list(
-            calendarId=calendar_id, timeMin=now,
-            maxResults=2500, singleEvents=True,
-            orderBy='startTime').execute()
-        return events_result.get('items', [])
-    except Exception as e:
-        print(f"Error getting existing events: {str(e)}")
+        messagebox.showerror("Error", f"Failed to update calendar: {str(e)}")
         return []
 
 class EventConfirmationUI:
@@ -623,12 +811,16 @@ class EventConfirmationUI:
         self.var_checkboxes = []
         self.event_frames = []  # Store references to event frames with metadata
         
+        # Load config
+        self.config = load_config()
+        self.app_config = self.config.get("app", {})
+        
         # Get all unique event types
         all_event_types = set(event.get('event_type', 'General') for event in events)
         self.event_types = sorted(list(all_event_types))
         
-        # Define colors for event types
-        self.type_colors = {
+        # Load color configuration
+        self.type_colors = self.config.get("event_colors", {
             "Raid": "#E57373",        # Light Red
             "Community Day": "#81C784", # Light Green
             "Spotlight": "#64B5F6",    # Light Blue
@@ -638,7 +830,7 @@ class EventConfirmationUI:
             "General": "#B0BEC5",      # Light Blue Grey
             "Ticket": "#4DB6AC",       # Light Teal
             "Shadow": "#9E9E9E"        # Light Grey
-        }
+        })
         
         # Configure filter variables
         self.filter_vars = {}
@@ -649,7 +841,10 @@ class EventConfirmationUI:
         
     def setup_ui(self):
         self.root.title("Pokémon GO Event Calendar - Confirm Events")
-        self.root.geometry("1000x700")
+        
+        # Get window size from config or use default
+        window_size = self.app_config.get("window_size", "1000x700")
+        self.root.geometry(window_size)
         
         # Configure style
         style = ttk.Style()
@@ -926,7 +1121,7 @@ class EventConfirmationUI:
             date_key = item['date_key']
             
             if self.filter_vars.get(event_type, tk.BooleanVar(value=True)).get():
-                frame.pack()  # Show the event
+                frame.pack(fill="x", padx=5, pady=5)  # Show the event
             else:
                 frame.pack_forget()  # Hide the event
         
@@ -960,21 +1155,38 @@ class EventConfirmationUI:
             return
         
         # Create the events in Google Calendar - using the actual event objects
-        created_events = create_calendar_events_direct(selected_events)
-        
-        if created_events:
-            messagebox.showinfo(
-                "Events Added", 
-                f"Successfully added {len(created_events)} events to the calendar:\n\n" + 
-                "\n".join([f"• {event}" for event in created_events])
-            )
-        else:
-            messagebox.showinfo("No Events Added", "No new events were added to the calendar.")
+        create_calendar_events_direct(selected_events)
         
         self.root.destroy()
 
 def main():
-    """Main function to run the script"""
+    """Main function to run the script with command line options"""
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Pokémon GO Calendar Event Scraper')
+    parser.add_argument('--force-auth', action='store_true', help='Force new authentication')
+    parser.add_argument('--create-config', action='store_true', help='Create a default config file')
+    args = parser.parse_args()
+    
+    # If create-config flag is set, just create the config file and exit
+    if args.create_config:
+        create_default_config()
+        print("Default configuration file created. Edit it with your settings, then run the script again.")
+        return
+    
+    # If force-auth flag is set, remove token.pickle to force re-authentication
+    if args.force_auth and os.path.exists(TOKEN_PATH):
+        try:
+            os.remove(TOKEN_PATH)
+            print("Removed old token.pickle file, will re-authenticate")
+        except Exception as e:
+            print(f"Failed to remove token file: {str(e)}")
+    
+    # Make sure we have a config file
+    if not os.path.exists(CONFIG_PATH):
+        create_default_config()
+        print("Please edit the newly created config.json file with your settings, then run the script again.")
+        return
+    
     print("Scraping events from LeekDuck...")
     
     events = scrape_leekduck_events()
