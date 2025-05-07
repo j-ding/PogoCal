@@ -1,0 +1,29 @@
+{
+    "google_api": {
+        "credentials_path": "credentials.json",
+        "calendar_id": "your_calendar_id_here@group.calendar.google.com"
+    },
+    "leekduck": {
+        "url": "https://leekduck.com/events/",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    },
+    "app": {
+        "window_size": "1000x700",
+        "default_reminders": [
+            {"method": "popup", "minutes": 60},
+            {"method": "popup", "minutes": 10}
+        ],
+        "timezone": "America/New_York"
+    },
+    "event_colors": {
+        "Raid": "#E57373",
+        "Community Day": "#81C784",
+        "Spotlight": "#64B5F6",
+        "Battle": "#FFB74D",
+        "Hatch Day": "#9575CD",
+        "Mega": "#FF8A65",
+        "General": "#B0BEC5",
+        "Ticket": "#4DB6AC",
+        "Shadow": "#9E9E9E"
+    }
+}
